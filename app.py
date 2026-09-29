@@ -11,6 +11,8 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import uuid
+import hashlib
+import hmac
 
 # ============================================================
 # CONFIGURACIÓN
@@ -36,9 +38,8 @@ st.set_page_config(
 # ============================================================
 # CONEXIÓN A GOOGLE SHEETS (para versión online compartida)
 # ============================================================
-def get_gsheet():
-    """Intenta conectar a Google Sheets usando secrets de Streamlit.
-    Retorna el worksheet o None si no está configurado."""
+def get_spreadsheet():
+    """Conecta al archivo de Google Sheets usando los secrets de Streamlit."""
     try:
         if "gcp_service_account" not in st.secrets:
             return None
@@ -53,16 +54,236 @@ def get_gsheet():
             st.secrets["gcp_service_account"], scopes=scopes
         )
         gc = gspread.authorize(credentials)
-        # El ID de la hoja se pone en secrets también
         sheet_id = st.secrets.get("sheet_id", "")
         if not sheet_id:
             return None
-        sh = gc.open_by_key(sheet_id)
-        # Usamos la primera hoja
-        return sh.sheet1
+        return gc.open_by_key(sheet_id)
     except Exception as e:
-        st.sidebar.warning(f"No se pudo conectar a Google Sheets: {e}")
         return None
+
+
+def get_gsheet():
+    """Retorna la primera pestaña: Registros."""
+    try:
+        sh = get_spreadsheet()
+        return sh.sheet1 if sh is not None else None
+    except Exception:
+        return None
+
+
+def get_users_sheet():
+    """Retorna la pestaña Usuarios y la crea si no existe."""
+    try:
+        sh = get_spreadsheet()
+        if sh is None:
+            return None
+
+        try:
+            ws = sh.worksheet("Usuarios")
+        except Exception:
+            ws = sh.add_worksheet(title="Usuarios", rows=100, cols=5)
+            ws.update("A1:E1", [["usuario", "password_hash", "nombre", "estado", "creado"]])
+        return ws
+    except Exception as e:
+        st.error(f"No se pudo acceder a la pestaña Usuarios: {e}")
+        return None
+
+
+def hash_password(password):
+    """Genera un hash SHA-256 de la contraseña."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def verify_password(password, password_hash):
+    """Compara la contraseña sin exponerla en la hoja."""
+    return hmac.compare_digest(hash_password(password), password_hash)
+
+
+def get_users():
+    """Carga los usuarios autorizados desde la pestaña Usuarios."""
+    ws = get_users_sheet()
+    if ws is None:
+        return []
+    try:
+        records = ws.get_all_records()
+        return [
+            {
+                "usuario": str(r.get("usuario", "")).strip(),
+                "password_hash": str(r.get("password_hash", "")).strip(),
+                "nombre": str(r.get("nombre", "")).strip(),
+                "estado": str(r.get("estado", "Activo")).strip(),
+                "creado": str(r.get("creado", "")).strip(),
+            }
+            for r in records
+            if str(r.get("usuario", "")).strip()
+        ]
+    except Exception:
+        return []
+
+
+def create_user(usuario, password, nombre):
+    """Crea un usuario autorizado en Google Sheets."""
+    ws = get_users_sheet()
+    if ws is None:
+        return False, "No hay conexión con Google Sheets."
+
+    usuario = usuario.strip()
+    nombre = nombre.strip()
+
+    if not usuario or not password or not nombre:
+        return False, "Todos los campos son obligatorios."
+
+    if len(password) < 8:
+        return False, "La contraseña debe tener al menos 8 caracteres."
+
+    users = get_users()
+    if any(u["usuario"].lower() == usuario.lower() for u in users):
+        return False, "Ese usuario ya existe."
+
+    ws.append_row([
+        usuario,
+        hash_password(password),
+        nombre,
+        "Activo",
+        get_now().strftime("%Y-%m-%d %H:%M:%S"),
+    ])
+    return True, "Usuario creado correctamente."
+
+
+def authenticate_user(usuario, password):
+    """Autentica un usuario y exige que esté activo."""
+    for user in get_users():
+        if (
+            user["usuario"].lower() == usuario.strip().lower()
+            and user["estado"].lower() == "activo"
+            and verify_password(password, user["password_hash"])
+        ):
+            return user
+    return None
+
+
+def authenticate_admin(usuario, password):
+    """Autentica al administrador mediante Streamlit Secrets."""
+    admin_user = str(st.secrets.get("admin_username", "")).strip()
+    admin_password = str(st.secrets.get("admin_password", ""))
+    if not admin_user or not admin_password:
+        return False
+    return (
+        hmac.compare_digest(usuario.strip(), admin_user)
+        and hmac.compare_digest(password, admin_password)
+    )
+
+
+def login_screen():
+    """Pantalla de inicio de sesión."""
+    st.markdown(
+        """
+        <style>
+        .login-box {
+            max-width: 520px;
+            margin: 4rem auto 0 auto;
+            padding: 2rem;
+            border-radius: 16px;
+            border: 1px solid #d9e2ec;
+            box-shadow: 0 4px 18px rgba(0,0,0,.08);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="login-box"><h1 style="text-align:center;">🔬 Laboratorio KIAT</h1>'
+        '<p style="text-align:center;">Gobernación de Sucre</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_login, tab_admin = st.tabs(["🔐 Iniciar sesión", "⚙️ Administrador"])
+
+    with tab_login:
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            password = st.text_input("Contraseña", type="password")
+            ingresar = st.form_submit_button(
+                "Ingresar", type="primary", use_container_width=True
+            )
+
+        if ingresar:
+            user = authenticate_user(usuario, password)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error("Usuario, contraseña incorrectos o cuenta inactiva.")
+
+    with tab_admin:
+        st.info("El administrador es el único que puede crear o activar usuarios.")
+        with st.form("admin_login_form"):
+            admin_usuario = st.text_input("Usuario administrador")
+            admin_password = st.text_input(
+                "Contraseña de administrador", type="password"
+            )
+            entrar_admin = st.form_submit_button(
+                "Acceder como administrador",
+                type="secondary",
+                use_container_width=True,
+            )
+
+        if entrar_admin:
+            if authenticate_admin(admin_usuario, admin_password):
+                st.session_state.admin_authenticated = True
+                st.rerun()
+            else:
+                st.error("Credenciales de administrador incorrectas.")
+
+    if st.session_state.get("admin_authenticated", False):
+        st.divider()
+        st.subheader("👤 Crear usuario autorizado")
+
+        with st.form("create_user_form"):
+            nuevo_usuario = st.text_input("Nuevo usuario")
+            nueva_password = st.text_input(
+                "Contraseña", type="password",
+                help="Mínimo 8 caracteres."
+            )
+            confirmar_password = st.text_input(
+                "Confirmar contraseña", type="password"
+            )
+            nuevo_nombre = st.selectbox(
+                "Persona autorizada", INGENIEROS
+            )
+            crear = st.form_submit_button(
+                "➕ Crear usuario", type="primary", use_container_width=True
+            )
+
+        if crear:
+            if nueva_password != confirmar_password:
+                st.error("Las contraseñas no coinciden.")
+            else:
+                ok, mensaje = create_user(
+                    nuevo_usuario, nueva_password, nuevo_nombre
+                )
+                if ok:
+                    st.success(mensaje)
+                else:
+                    st.error(mensaje)
+
+        st.caption(
+            "Las contraseñas de los usuarios se almacenan como hash y no "
+            "quedan visibles en Google Sheets."
+        )
+
+    return False
+
+
+def require_login():
+    """Bloquea toda la aplicación hasta que exista una sesión válida."""
+    if st.session_state.get("authenticated", False):
+        return True
+
+    login_screen()
+    return False
 
 
 def load_data():
@@ -322,6 +543,9 @@ def generar_reporte_semanal(registros, fecha_inicio, fecha_fin):
 # INTERFAZ PRINCIPAL
 # ============================================================
 def main():
+    if not require_login():
+        return
+
     st.markdown(
         """
         <style>
@@ -354,6 +578,15 @@ def main():
 
     # Sidebar
     with st.sidebar:
+        usuario_actual = st.session_state.get("user", {})
+        st.success(
+            f"👤 Sesión: **{usuario_actual.get('nombre', 'Usuario')}**"
+        )
+        if st.button("🚪 Cerrar sesión", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.user = None
+            st.rerun()
+
         st.header("Menú")
         seccion = st.radio(
             "Seleccione una opción:",
@@ -399,7 +632,9 @@ def main():
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            nombre = st.selectbox("Seleccione su nombre:", INGENIEROS, key="llegada_nombre")
+            usuario_actual = st.session_state.get("user", {})
+            nombre = usuario_actual.get("nombre", "")
+            st.text_input("Usuario autorizado:", value=nombre, disabled=True)
 
         with col2:
             if jornada == "sabado":
@@ -466,7 +701,9 @@ def main():
 
         ahora = get_now()
 
-        nombre = st.selectbox("Seleccione su nombre:", INGENIEROS, key="salida_nombre")
+        usuario_actual = st.session_state.get("user", {})
+        nombre = usuario_actual.get("nombre", "")
+        st.text_input("Usuario autorizado:", value=nombre, disabled=True)
         destino = st.text_input(
             "Destino o motivo (recomendado):",
             placeholder="Ej: Inspección en Sincelejo / Muestreo en Tolú...",
