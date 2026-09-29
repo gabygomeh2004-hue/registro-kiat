@@ -117,9 +117,10 @@ def verify_password(password, password_hash):
     if not password_hash:
         return False
 
-    # Soporta hashes SHA-256 de 64 caracteres hexadecimales.
     calculated = hash_password(password)
-    return hmac.compare_digest(calculated.lower(), password_hash.lower())
+
+    # La contraseña sigue siendo sensible a mayúsculas/minúsculas.
+    return hmac.compare_digest(calculated, password_hash.lower())
 
 
 def _normalize_header(value):
@@ -136,14 +137,18 @@ def _normalize_header(value):
 
 def get_users():
     """
-    Lee los usuarios desde Google Sheets.
+    Lee los usuarios desde Google Sheets usando las posiciones reales
+    de la pestaña Usuarios.
 
-    Compatible con la estructura que actualmente tiene la hoja:
+    Estructura actual de los datos:
     A = Usuario
-    B = Contraseña cifra
+    B = Contraseña cifrada
     C = Nombre
-    D = Activo (si/no)
-    E = Creado
+    D = Activo
+    E = Fecha de creación
+
+    Se usan posiciones y no los títulos porque los encabezados actuales
+    de la hoja no coinciden con el orden real de los datos.
     """
     ws = get_users_sheet()
     if ws is None:
@@ -151,51 +156,30 @@ def get_users():
 
     try:
         values = ws.get_all_values()
-        if not values:
+        if len(values) <= 1:
             return []
-
-        headers = [_normalize_header(h) for h in values[0]]
-
-        def find_col(possible_names, default_index):
-            for name in possible_names:
-                if name in headers:
-                    return headers.index(name)
-            return default_index
-
-        usuario_col = find_col(
-            ["usuario", "username", "user"], 0
-        )
-        password_col = find_col(
-            ["contrasena cifra", "password_hash", "password hash",
-             "contrasena", "contraseña cifra", "contraseña"],
-            1
-        )
-        nombre_col = find_col(
-            ["nombre", "name"], 2
-        )
-        estado_col = find_col(
-            ["activo (si/no)", "activo", "estado", "status"], 3
-        )
-        creado_col = find_col(
-            ["creado", "fecha", "fecha de creacion"], 4
-        )
 
         users = []
 
         for row in values[1:]:
-            def cell(index):
-                return str(row[index]).strip() if index < len(row) else ""
+            # Garantizar al menos 5 columnas.
+            row = list(row) + [""] * max(0, 5 - len(row))
 
-            usuario = cell(usuario_col)
+            usuario = str(row[0]).strip()
+            password_hash = str(row[1]).strip()
+            nombre = str(row[2]).strip()
+            estado = str(row[3]).strip()
+            creado = str(row[4]).strip()
+
             if not usuario:
                 continue
 
             users.append({
                 "usuario": usuario,
-                "password_hash": cell(password_col),
-                "nombre": cell(nombre_col),
-                "estado": cell(estado_col),
-                "creado": cell(creado_col),
+                "password_hash": password_hash,
+                "nombre": nombre,
+                "estado": estado,
+                "creado": creado,
             })
 
         return users
@@ -203,6 +187,7 @@ def get_users():
     except Exception as e:
         st.error(f"No se pudieron leer los usuarios: {e}")
         return []
+
 
 
 def create_user(usuario, password, nombre):
@@ -332,7 +317,7 @@ def login_screen():
                 st.session_state.user = user
                 st.rerun()
             else:
-                st.error("Usuario, contraseña incorrectos o cuenta inactiva. Verifique que el usuario esté escrito exactamente como aparece en la pestaña Usuarios.")
+                st.error("No fue posible iniciar sesión. Verifique el usuario, la contraseña y que la cuenta esté marcada como Activo en la pestaña Usuarios.")
 
     with tab_admin:
         st.info("El administrador es el único que puede crear o activar usuarios.")
