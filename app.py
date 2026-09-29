@@ -72,18 +72,37 @@ def get_gsheet():
 
 
 def get_users_sheet():
-    """Retorna la pestaña Usuarios y la crea si no existe."""
+    """Retorna la pestaña Usuarios. La crea solo si realmente no existe."""
     try:
         sh = get_spreadsheet()
         if sh is None:
             return None
 
         try:
+            # La pestaña ya existe: simplemente la usamos.
             ws = sh.worksheet("Usuarios")
-        except Exception:
-            ws = sh.add_worksheet(title="Usuarios", rows=100, cols=5)
-            ws.update("A1:E1", [["usuario", "password_hash", "nombre", "estado", "creado"]])
+        except Exception as e:
+            # Solo crearla si Google Sheets confirma que no existe.
+            error_text = str(e).lower()
+            if "unable to find worksheet" in error_text or "not found" in error_text:
+                ws = sh.add_worksheet(title="Usuarios", rows=100, cols=5)
+                ws.update(
+                    "A1:E1",
+                    [["usuario", "password_hash", "nombre", "estado", "creado"]]
+                )
+            else:
+                raise e
+
+        # Si la pestaña existe pero está vacía, crear encabezados.
+        values = ws.get_all_values()
+        if not values:
+            ws.update(
+                "A1:E1",
+                [["usuario", "password_hash", "nombre", "estado", "creado"]]
+            )
+
         return ws
+
     except Exception as e:
         st.error(f"No se pudo acceder a la pestaña Usuarios: {e}")
         return None
