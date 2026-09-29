@@ -119,24 +119,42 @@ def verify_password(password, password_hash):
 
 
 def get_users():
-    """Carga los usuarios autorizados desde la pestaña Usuarios."""
+    """Carga los usuarios desde la pestaña Usuarios.
+
+    Acepta tanto los encabezados creados por esta aplicación como la estructura
+    que ya tenía la hoja existente. La información se interpreta por posición:
+    A=usuario, B=hash, C=nombre, D=estado, E=fecha de creación.
+    """
     ws = get_users_sheet()
     if ws is None:
         return []
+
     try:
-        records = ws.get_all_records()
-        return [
-            {
-                "usuario": str(r.get("usuario", "")).strip(),
-                "password_hash": str(r.get("password_hash", "")).strip(),
-                "nombre": str(r.get("nombre", "")).strip(),
-                "estado": str(r.get("estado", "Activo")).strip(),
-                "creado": str(r.get("creado", "")).strip(),
-            }
-            for r in records
-            if str(r.get("usuario", "")).strip()
-        ]
-    except Exception:
+        rows = ws.get_all_values()
+        if len(rows) <= 1:
+            return []
+
+        users = []
+        for row in rows[1:]:
+            row = list(row) + [""] * (5 - len(row))
+            usuario = str(row[0]).strip()
+            password_hash = str(row[1]).strip()
+            nombre = str(row[2]).strip()
+            estado = str(row[3]).strip() or "Activo"
+            creado = str(row[4]).strip()
+
+            if usuario:
+                users.append({
+                    "usuario": usuario,
+                    "password_hash": password_hash,
+                    "nombre": nombre,
+                    "estado": estado,
+                    "creado": creado,
+                })
+
+        return users
+    except Exception as e:
+        st.error(f"No se pudieron leer los usuarios: {e}")
         return []
 
 
