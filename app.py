@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime, timedelta, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -130,7 +131,7 @@ def save_data(data):
 
 def get_now():
     """Hora actual en Colombia (UTC-5)"""
-    return datetime.now()
+    return datetime.now(ZoneInfo("America/Bogota"))
 
 
 def determinar_jornada(ahora=None):
