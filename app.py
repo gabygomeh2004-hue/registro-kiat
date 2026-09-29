@@ -13,6 +13,7 @@ from docx.oxml import OxmlElement
 import uuid
 import hashlib
 import hmac
+import re
 
 # ============================================================
 # CONFIGURACIÓN
