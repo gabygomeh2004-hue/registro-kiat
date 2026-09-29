@@ -72,100 +72,147 @@ def get_gsheet():
 
 
 def get_users_sheet():
-    """Retorna la pestaña Usuarios. La crea solo si realmente no existe."""
+    """Retorna la pestaña Usuarios existente o la crea si realmente no existe."""
     try:
         sh = get_spreadsheet()
         if sh is None:
             return None
 
         try:
-            # La pestaña ya existe: simplemente la usamos.
             ws = sh.worksheet("Usuarios")
         except Exception as e:
-            # Solo crearla si Google Sheets confirma que no existe.
-            error_text = str(e).lower()
-            if "unable to find worksheet" in error_text or "not found" in error_text:
+            msg = str(e).lower()
+            if "unable to find worksheet" in msg or "not found" in msg:
                 ws = sh.add_worksheet(title="Usuarios", rows=100, cols=5)
                 ws.update(
                     "A1:E1",
-                    [["usuario", "password_hash", "nombre", "estado", "creado"]]
+                    [["Usuario", "Contraseña cifra", "Nombre", "Activo (si/no)", "Creado"]]
                 )
             else:
-                raise e
+                raise
 
-        # Si la pestaña existe pero está vacía, crear encabezados.
-        values = ws.get_all_values()
-        if not values:
+        if not ws.get_all_values():
             ws.update(
                 "A1:E1",
-                [["usuario", "password_hash", "nombre", "estado", "creado"]]
+                [["Usuario", "Contraseña cifra", "Nombre", "Activo (si/no)", "Creado"]]
             )
 
         return ws
-
     except Exception as e:
         st.error(f"No se pudo acceder a la pestaña Usuarios: {e}")
         return None
 
 
 def hash_password(password):
-    """Genera un hash SHA-256 de la contraseña."""
+    """Genera el hash SHA-256 de una contraseña."""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 def verify_password(password, password_hash):
-    """Compara la contraseña sin exponerla en la hoja."""
-    return hmac.compare_digest(hash_password(password), password_hash)
+    """Verifica una contraseña contra su hash SHA-256."""
+    password = str(password or "")
+    password_hash = str(password_hash or "").strip()
+
+    if not password_hash:
+        return False
+
+    # Soporta hashes SHA-256 de 64 caracteres hexadecimales.
+    calculated = hash_password(password)
+    return hmac.compare_digest(calculated.lower(), password_hash.lower())
+
+
+def _normalize_header(value):
+    """Normaliza encabezados para tolerar mayúsculas, espacios y tildes."""
+    import unicodedata
+    value = str(value or "").strip().lower()
+    value = "".join(
+        c for c in unicodedata.normalize("NFD", value)
+        if unicodedata.category(c) != "Mn"
+    )
+    value = re.sub(r"\s+", " ", value)
+    return value
 
 
 def get_users():
-    """Carga los usuarios desde la pestaña Usuarios.
+    """
+    Lee los usuarios desde Google Sheets.
 
-    Acepta tanto los encabezados creados por esta aplicación como la estructura
-    que ya tenía la hoja existente. La información se interpreta por posición:
-    A=usuario, B=hash, C=nombre, D=estado, E=fecha de creación.
+    Compatible con la estructura que actualmente tiene la hoja:
+    A = Usuario
+    B = Contraseña cifra
+    C = Nombre
+    D = Activo (si/no)
+    E = Creado
     """
     ws = get_users_sheet()
     if ws is None:
         return []
 
     try:
-        rows = ws.get_all_values()
-        if len(rows) <= 1:
+        values = ws.get_all_values()
+        if not values:
             return []
 
-        users = []
-        for row in rows[1:]:
-            row = list(row) + [""] * (5 - len(row))
-            usuario = str(row[0]).strip()
-            password_hash = str(row[1]).strip()
-            nombre = str(row[2]).strip()
-            estado = str(row[3]).strip() or "Activo"
-            creado = str(row[4]).strip()
+        headers = [_normalize_header(h) for h in values[0]]
 
-            if usuario:
-                users.append({
-                    "usuario": usuario,
-                    "password_hash": password_hash,
-                    "nombre": nombre,
-                    "estado": estado,
-                    "creado": creado,
-                })
+        def find_col(possible_names, default_index):
+            for name in possible_names:
+                if name in headers:
+                    return headers.index(name)
+            return default_index
+
+        usuario_col = find_col(
+            ["usuario", "username", "user"], 0
+        )
+        password_col = find_col(
+            ["contrasena cifra", "password_hash", "password hash",
+             "contrasena", "contraseña cifra", "contraseña"],
+            1
+        )
+        nombre_col = find_col(
+            ["nombre", "name"], 2
+        )
+        estado_col = find_col(
+            ["activo (si/no)", "activo", "estado", "status"], 3
+        )
+        creado_col = find_col(
+            ["creado", "fecha", "fecha de creacion"], 4
+        )
+
+        users = []
+
+        for row in values[1:]:
+            def cell(index):
+                return str(row[index]).strip() if index < len(row) else ""
+
+            usuario = cell(usuario_col)
+            if not usuario:
+                continue
+
+            users.append({
+                "usuario": usuario,
+                "password_hash": cell(password_col),
+                "nombre": cell(nombre_col),
+                "estado": cell(estado_col),
+                "creado": cell(creado_col),
+            })
 
         return users
+
     except Exception as e:
         st.error(f"No se pudieron leer los usuarios: {e}")
         return []
 
 
 def create_user(usuario, password, nombre):
-    """Crea un usuario autorizado en Google Sheets."""
+    """Crea un usuario autorizado en la estructura actual de Usuarios."""
     ws = get_users_sheet()
     if ws is None:
         return False, "No hay conexión con Google Sheets."
 
-    usuario = usuario.strip()
-    nombre = nombre.strip()
+    usuario = str(usuario or "").strip()
+    password = str(password or "")
+    nombre = str(nombre or "").strip()
 
     if not usuario or not password or not nombre:
         return False, "Todos los campos son obligatorios."
@@ -174,6 +221,7 @@ def create_user(usuario, password, nombre):
         return False, "La contraseña debe tener al menos 8 caracteres."
 
     users = get_users()
+
     if any(u["usuario"].lower() == usuario.lower() for u in users):
         return False, "Ese usuario ya existe."
 
@@ -184,31 +232,62 @@ def create_user(usuario, password, nombre):
         "Activo",
         get_now().strftime("%Y-%m-%d %H:%M:%S"),
     ])
+
     return True, "Usuario creado correctamente."
 
 
 def authenticate_user(usuario, password):
-    """Autentica un usuario y exige que esté activo."""
-    for user in get_users():
-        if (
-            user["usuario"].lower() == usuario.strip().lower()
-            and user["estado"].lower() == "activo"
-            and verify_password(password, user["password_hash"])
-        ):
+    """Autentica un usuario activo."""
+    usuario_ingresado = str(usuario or "").strip().lower()
+    password_ingresada = str(password or "")
+
+    if not usuario_ingresado or not password_ingresada:
+        return None
+
+    users = get_users()
+
+    for user in users:
+        usuario_guardado = user["usuario"].strip().lower()
+        estado = user["estado"].strip().lower()
+
+        # Acepta diferentes formas equivalentes de indicar que está activo.
+        activo = estado in {
+            "activo",
+            "activa",
+            "si",
+            "sí",
+            "yes",
+            "true",
+            "1",
+        }
+
+        if usuario_guardado != usuario_ingresado:
+            continue
+
+        if not activo:
+            return None
+
+        if verify_password(password_ingresada, user["password_hash"]):
             return user
+
+        return None
+
     return None
 
 
 def authenticate_admin(usuario, password):
-    """Autentica al administrador mediante Streamlit Secrets."""
+    """Autentica al administrador usando Streamlit Secrets."""
     admin_user = str(st.secrets.get("admin_username", "")).strip()
     admin_password = str(st.secrets.get("admin_password", ""))
+
     if not admin_user or not admin_password:
         return False
+
     return (
-        hmac.compare_digest(usuario.strip(), admin_user)
-        and hmac.compare_digest(password, admin_password)
+        hmac.compare_digest(str(usuario or "").strip(), admin_user)
+        and hmac.compare_digest(str(password or ""), admin_password)
     )
+
 
 
 def login_screen():
@@ -252,7 +331,7 @@ def login_screen():
                 st.session_state.user = user
                 st.rerun()
             else:
-                st.error("Usuario, contraseña incorrectos o cuenta inactiva.")
+                st.error("Usuario, contraseña incorrectos o cuenta inactiva. Verifique que el usuario esté escrito exactamente como aparece en la pestaña Usuarios.")
 
     with tab_admin:
         st.info("El administrador es el único que puede crear o activar usuarios.")
